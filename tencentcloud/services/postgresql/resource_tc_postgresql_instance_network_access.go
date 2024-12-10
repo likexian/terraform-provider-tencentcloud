@@ -140,7 +140,7 @@ func resourceTencentCloudPostgresqlInstanceNetworkAccessCreate(d *schema.Resourc
 	}).WaitForStateContext(ctx); err != nil {
 		return err
 	}
-	
+
 	// get vip
 	service := PostgresqlService{client: meta.(tccommon.ProviderMeta).GetAPIV3Conn()}
 	respData, err := service.DescribePostgresqlInstanceNetworkAccessById(ctx, dbInsntaceId)
@@ -155,7 +155,9 @@ func resourceTencentCloudPostgresqlInstanceNetworkAccessCreate(d *schema.Resourc
 
 	if respData.DBInstanceNetInfo != nil && len(respData.DBInstanceNetInfo) > 0 {
 		for _, item := range respData.DBInstanceNetInfo {
-			if *item.VpcId == vpcId && 
+			if *item.VpcId == vpcId && *item.SubnetId == subnetId {
+
+			}
 		}
 	}
 
