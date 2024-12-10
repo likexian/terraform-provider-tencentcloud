@@ -2186,3 +2186,32 @@ func (me *PostgresqlService) DescribePostgresqlDedicatedClustersByFilter(ctx con
 	ret = response.Response.DedicatedClusterSet
 	return
 }
+
+func (me *PostgresqlService) DescribePostgresqlInstanceNetworkAccessById(ctx context.Context, dbInsntaceId string) (ret *postgresql.DBInstance, errRet error) {
+	logId := tccommon.GetLogId(ctx)
+
+	request := postgresql.NewDescribeDBInstanceAttributeRequest()
+	request.DBInstanceId = helper.String(dbInsntaceId)
+
+	defer func() {
+		if errRet != nil {
+			log.Printf("[CRITAL]%s api[%s] fail, request body [%s], reason[%s]\n", logId, request.GetAction(), request.ToJsonString(), errRet.Error())
+		}
+	}()
+
+	ratelimit.Check(request.GetAction())
+
+	response, err := me.client.UsePostgresqlV20170312Client().DescribeDBInstanceAttribute(request)
+	if err != nil {
+		errRet = err
+		return
+	}
+	log.Printf("[DEBUG]%s api[%s] success, request body [%s], response body [%s]\n", logId, request.GetAction(), request.ToJsonString(), response.ToJsonString())
+
+	if response.Response == nil {
+		return
+	}
+
+	ret = response.Response.DBInstance
+	return
+}

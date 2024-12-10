@@ -225,6 +225,7 @@ type TencentCloudClient struct {
 	wafv20180125Conn        *waf.Client
 	camv20190116Conn        *cam.Client
 	clsv20201016Conn        *cls.Client
+	postgresqlv20170312Conn *postgre.Client
 }
 
 // NewClientProfile returns a new ClientProfile
@@ -2001,4 +2002,17 @@ func (me *TencentCloudClient) UseClsV20201016Client() *cls.Client {
 	me.clsv20201016Conn.WithHttpTransport(&LogRoundTripper{})
 
 	return me.clsv20201016Conn
+}
+
+// UsePostgresqlV20170312Client return POSTGRESQL client for service
+func (me *TencentCloudClient) UsePostgresqlV20170312Client() *postgre.Client {
+	if me.postgresqlv20170312Conn != nil {
+		return me.postgresqlv20170312Conn
+	}
+	cpf := me.NewClientProfile(300)
+	cpf.Language = "zh-CN"
+	me.postgresqlv20170312Conn, _ = postgre.NewClient(me.Credential, me.Region, cpf)
+	me.postgresqlv20170312Conn.WithHttpTransport(&LogRoundTripper{})
+
+	return me.postgresqlv20170312Conn
 }
