@@ -511,6 +511,7 @@ func Provider() *schema.Provider {
 			"tencentcloud_cos_batchs":                                   cos.DataSourceTencentCloudCosBatchs(),
 			"tencentcloud_cos_bucket_inventorys":                        cos.DataSourceTencentCloudCosBucketInventorys(),
 			"tencentcloud_cos_bucket_multipart_uploads":                 cos.DataSourceTencentCloudCosBucketMultipartUploads(),
+			"tencentcloud_cos_object_signed_url":                        cos.DataSourceTencentCloudCosObjectSignedUrl(),
 			"tencentcloud_cfs_file_systems":                             cfs.DataSourceTencentCloudCfsFileSystems(),
 			"tencentcloud_cfs_access_groups":                            cfs.DataSourceTencentCloudCfsAccessGroups(),
 			"tencentcloud_cfs_access_rules":                             cfs.DataSourceTencentCloudCfsAccessRules(),

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -180,7 +181,7 @@ func IsLenReader(reader io.Reader) bool {
 
 func CheckReaderLen(reader io.Reader) error {
 	nlen, err := GetReaderLen(reader)
-	if err != nil || nlen < singleUploadMaxLength {
+	if err != nil || nlen <= singleUploadMaxLength {
 		return nil
 	}
 	return errors.New("The single object size you upload can not be larger than 5GB")
@@ -233,6 +234,7 @@ func CloneObjectPutOptions(opt *ObjectPutOptions) *ObjectPutOptions {
 	res := &ObjectPutOptions{
 		&ACLHeaderOptions{},
 		&ObjectPutHeaderOptions{},
+		nil,
 	}
 	if opt != nil {
 		if opt.ACLHeaderOptions != nil {
@@ -242,6 +244,9 @@ func CloneObjectPutOptions(opt *ObjectPutOptions) *ObjectPutOptions {
 			*res.ObjectPutHeaderOptions = *opt.ObjectPutHeaderOptions
 			res.XCosMetaXXX = cloneHeader(opt.XCosMetaXXX)
 			res.XOptionHeader = cloneHeader(opt.XOptionHeader)
+		}
+		if opt.innerSwitchURL != nil {
+			res.innerSwitchURL = opt.innerSwitchURL
 		}
 	}
 	return res
@@ -291,6 +296,15 @@ func CloneCompleteMultipartUploadOptions(opt *CompleteMultipartUploadOptions) *C
 			res.Parts = make([]Object, len(opt.Parts))
 			copy(res.Parts, opt.Parts)
 		}
+		res.XOptionHeader = cloneHeader(opt.XOptionHeader)
+	}
+	return &res
+}
+
+func cloneObjectCopyPartOptions(opt *ObjectCopyPartOptions) *ObjectCopyPartOptions {
+	var res ObjectCopyPartOptions
+	if opt != nil {
+		res = *opt
 		res.XOptionHeader = cloneHeader(opt.XOptionHeader)
 	}
 	return &res
@@ -368,7 +382,7 @@ func isDeliverHeader(key string) bool {
 			return true
 		}
 	}
-	return strings.HasPrefix(key, privateHeaderPrefix)
+	return strings.HasPrefix(key, privateHeaderPrefix) || strings.HasPrefix(key, "x-")
 }
 
 func deliverInitOptions(opt *InitiateMultipartUploadOptions) (*http.Header, error) {
@@ -389,4 +403,74 @@ func deliverInitOptions(opt *InitiateMultipartUploadOptions) (*http.Header, erro
 		}
 	}
 	return header, nil
+}
+
+var (
+	bucketReg   = regexp.MustCompile(`<Bucket>([a-z0-9-]+-[0-9]+)</Bucket>`)
+	keyReg      = regexp.MustCompile(`<Key>(.*?)</Key>`)
+	uploadIdReg = regexp.MustCompile(`<UploadId>([a-z0-9]+)</UploadId>`)
+	locationReg = regexp.MustCompile(`<Location>(.*?)</Location>`)
+	etagReg     = regexp.MustCompile(`<ETag>&quot;(.*?)&quot;</ETag>`)
+)
+
+func UnmarshalInitMultiUploadResult(data []byte, res *InitiateMultipartUploadResult) error {
+	match := bucketReg.FindStringSubmatch(string(data))
+	if len(match) > 1 {
+		res.Bucket = match[1]
+	} else {
+		return fmt.Errorf("Unmarshal failed, %v", string(data))
+	}
+	match = keyReg.FindStringSubmatch(string(data))
+	if len(match) > 1 {
+		res.Key = match[1]
+	} else {
+		return fmt.Errorf("Unmarshal failed, %v", string(data))
+	}
+	match = uploadIdReg.FindStringSubmatch(string(data))
+	if len(match) > 1 {
+		res.UploadID = match[1]
+	} else {
+		return fmt.Errorf("Unmarshal failed, %v", string(data))
+	}
+	return nil
+}
+
+func UnmarshalCompleteMultiUploadResult(data []byte, res *CompleteMultipartUploadResult) error {
+	match := locationReg.FindStringSubmatch(string(data))
+	if len(match) > 1 {
+		res.Location = match[1]
+	} else {
+		return fmt.Errorf("Unmarshal Location failed, %v", string(data))
+	}
+	match = bucketReg.FindStringSubmatch(string(data))
+	if len(match) > 1 {
+		res.Bucket = match[1]
+	} else {
+		return fmt.Errorf("Unmarshal Bucket failed, %v", string(data))
+	}
+	match = keyReg.FindStringSubmatch(string(data))
+	if len(match) > 1 {
+		res.Key = match[1]
+	} else {
+		return fmt.Errorf("Unmarshal Key failed, %v", string(data))
+	}
+	match = etagReg.FindStringSubmatch(string(data))
+	if len(match) > 1 {
+		res.ETag = "\"" + match[1] + "\""
+	} else {
+		return fmt.Errorf("Unmarshal Etag failed, %v", string(data))
+	}
+
+	return nil
+}
+
+func GetBucketRegionFromUrl(u *url.URL) (string, string) {
+	if u == nil {
+		return "", ""
+	}
+	vec := strings.Split(u.Host, ".")
+	if len(vec) < 3 {
+		return "", ""
+	}
+	return vec[0], vec[2]
 }

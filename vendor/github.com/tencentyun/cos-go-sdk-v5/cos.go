@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"text/template"
@@ -24,7 +26,7 @@ import (
 
 const (
 	// Version current go sdk version
-	Version               = "0.7.42"
+	Version               = "0.7.58"
 	UserAgent             = "cos-go-sdk-v5/" + Version
 	contentTypeXML        = "application/xml"
 	defaultServiceBaseURL = "http://service.cos.myqcloud.com"
@@ -39,9 +41,25 @@ var (
 	)
 
 	// {<http://>|<https://>}{bucketname-appid}.{cos|cos-internal|cos-website|ci}.{region}.{myqcloud.com/tencentcos.cn}{/}
-	hostSuffix       = regexp.MustCompile(`^.*((cos|cos-internal|cos-website|ci)\.[a-z-1]+|file)\.(myqcloud\.com|tencentcos\.cn).*$`)
-	hostPrefix       = regexp.MustCompile(`^(http://|https://){0,1}([a-z0-9-]+-[0-9]+\.){0,1}((cos|cos-internal|cos-website|ci)\.[a-z-1]+|file)\.(myqcloud\.com|tencentcos\.cn).*$`)
-	invalidBucketErr = fmt.Errorf("invalid bucket format, please check your cos.BaseURL")
+	hostSuffix            = regexp.MustCompile(`^.*((cos|cos-internal|cos-website|ci)\.[a-z-1]+|file)\.(myqcloud\.com|tencentcos\.cn).*$`)
+	hostPrefix            = regexp.MustCompile(`^(http://|https://){0,1}([a-z0-9-]+-[0-9]+\.){0,1}((cos|cos-internal|cos-website|ci)\.[a-z-1]+|file)\.(myqcloud\.com|tencentcos\.cn).*$`)
+	metaInsightHostPrefix = regexp.MustCompile(`^(http://|https://){0,1}([0-9]+\.){1}((cos|cos-internal|cos-website|ci)\.[a-z-1]+|file)\.(myqcloud\.com|tencentcos\.cn).*$`)
+	bucketChecker         = regexp.MustCompile(`^[a-z0-9-]+-[0-9]+$`)
+	regionChecker         = regexp.MustCompile(`^[a-z-1]+$`)
+
+	// 校验传入的url
+	domainSuffix         = regexp.MustCompile(`^.*\.(myqcloud\.com(:[0-9]+){0,1}|tencentcos\.cn(:[0-9]+){0,1})$`)
+	bucketDomainChecker  = regexp.MustCompile(`^(http://|https://){0,1}([a-z0-9-]+-[0-9]+\.){0,1}((cos|cos-internal|cos-website|ci)\.[a-z-1]+|file)\.(myqcloud\.com|tencentcos\.cn)(:[0-9]+){0,1}$`)
+	serviceDomainChecker = regexp.MustCompile(`^(http://|https://){0,1}((service.cos.myqcloud.com|service.cos-internal.tencentcos.cn|service.cos.tencentcos.cn)|(cos|cos-internal)\.[a-z-1]+\.(myqcloud\.com|tencentcos\.cn))(:[0-9]+){0,1}$`)
+	batchDomainChecker   = regexp.MustCompile(`^(http://|https://){0,1}([0-9]+\.){1}cos-control\.[a-z-1]+\.(myqcloud\.com|tencentcos\.cn)(:[0-9]+){0,1}$`)
+	invalidBucketErr     = fmt.Errorf("invalid bucket format, please check your cos.BaseURL")
+
+	switchHost             = regexp.MustCompile(`([a-z0-9-]+-[0-9]+\.)(cos\.[a-z-1]+)\.(myqcloud\.com)(:[0-9]+){0,1}$`)
+	accelerateDomainSuffix = "accelerate.myqcloud.com"
+	oldDomainSuffix        = ".myqcloud.com"
+	newDomainSuffix        = ".tencentcos.cn"
+
+	ObjectKeySimplifyCheckErr = fmt.Errorf("The Getobject Key is illegal")
 )
 
 // BaseURL 访问各 API 所需的基础 URL
@@ -56,6 +74,28 @@ type BaseURL struct {
 	CIURL *url.URL
 	// 访问 Fetch Task 的基础 URL
 	FetchURL *url.URL
+	// 访问 MetaInsight 的基础 URL
+	MetaInsightURL *url.URL
+}
+
+func (*BaseURL) innerCheck(u *url.URL, reg *regexp.Regexp) bool {
+	if u == nil {
+		return true
+	}
+	urlStr := strings.TrimRight(u.String(), "/")
+	if !strings.HasPrefix(urlStr, "https://") && !strings.HasPrefix(urlStr, "http://") {
+		return false
+	}
+	if domainSuffix.MatchString(urlStr) && !reg.MatchString(urlStr) {
+		return false
+	}
+	return true
+}
+
+func (u *BaseURL) Check() bool {
+	return u.innerCheck(u.BucketURL, bucketDomainChecker) &&
+		(u.innerCheck(u.ServiceURL, serviceDomainChecker) || u.innerCheck(u.ServiceURL, bucketDomainChecker)) &&
+		(u.innerCheck(u.BatchURL, batchDomainChecker) || u.innerCheck(u.BatchURL, bucketDomainChecker))
 }
 
 // NewBucketURL 生成 BaseURL 所需的 BucketURL
@@ -69,7 +109,7 @@ func NewBucketURL(bucketName, region string, secure bool) (*url.URL, error) {
 		schema = "http"
 	}
 
-	if region == "" {
+	if region == "" || !regionChecker.MatchString(region) {
 		return nil, fmt.Errorf("region[%v] is invalid", region)
 	}
 	if bucketName == "" || !strings.ContainsAny(bucketName, "-") {
@@ -89,14 +129,15 @@ func NewBucketURL(bucketName, region string, secure bool) (*url.URL, error) {
 }
 
 type RetryOptions struct {
-	Count      int
-	Interval   time.Duration
-	StatusCode []int
+	Count          int
+	Interval       time.Duration
+	AutoSwitchHost bool
 }
 type Config struct {
-	EnableCRC        bool
-	RequestBodyClose bool
-	RetryOpt         RetryOptions
+	EnableCRC              bool
+	RequestBodyClose       bool
+	RetryOpt               RetryOptions
+	ObjectKeySimplifyCheck bool
 }
 
 // Client is a client manages communication with the COS API.
@@ -109,23 +150,40 @@ type Client struct {
 
 	common service
 
-	Service *ServiceService
-	Bucket  *BucketService
-	Object  *ObjectService
-	Batch   *BatchService
-	CI      *CIService
+	Service     *ServiceService
+	Bucket      *BucketService
+	Object      *ObjectService
+	Batch       *BatchService
+	CI          *CIService
+	MetaInsight *MetaInsightService
 
 	Conf *Config
+
+	invalidURL bool
 }
 
 type service struct {
 	client *Client
 }
 
+// go http default CheckRedirect
+func HttpDefaultCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
+
 // NewClient returns a new COS API client.
 func NewClient(uri *BaseURL, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{}
+	}
+	// avoid SSRF, default don't follow 3xx
+	if httpClient.CheckRedirect == nil {
+		httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
 	}
 
 	baseURL := &BaseURL{}
@@ -135,9 +193,14 @@ func NewClient(uri *BaseURL, httpClient *http.Client) *Client {
 		baseURL.BatchURL = uri.BatchURL
 		baseURL.CIURL = uri.CIURL
 		baseURL.FetchURL = uri.FetchURL
+		baseURL.MetaInsightURL = uri.MetaInsightURL
 	}
 	if baseURL.ServiceURL == nil {
 		baseURL.ServiceURL, _ = url.Parse(defaultServiceBaseURL)
+	}
+	var invalidURL bool
+	if !baseURL.Check() {
+		invalidURL = true
 	}
 
 	c := &Client{
@@ -148,10 +211,13 @@ func NewClient(uri *BaseURL, httpClient *http.Client) *Client {
 			EnableCRC:        true,
 			RequestBodyClose: false,
 			RetryOpt: RetryOptions{
-				Count:    3,
-				Interval: time.Duration(0),
+				Count:          3,
+				Interval:       time.Duration(0),
+				AutoSwitchHost: false,
 			},
+			ObjectKeySimplifyCheck: true,
 		},
+		invalidURL: invalidURL,
 	}
 	c.common.client = c
 	c.Service = (*ServiceService)(&c.common)
@@ -159,7 +225,12 @@ func NewClient(uri *BaseURL, httpClient *http.Client) *Client {
 	c.Object = (*ObjectService)(&c.common)
 	c.Batch = (*BatchService)(&c.common)
 	c.CI = (*CIService)(&c.common)
+	c.MetaInsight = (*MetaInsightService)(&c.common)
 	return c
+}
+
+func (c *Client) DisableURLCheck() {
+	c.invalidURL = false
 }
 
 type Credential struct {
@@ -200,9 +271,15 @@ func (c *Client) GetCredential() *Credential {
 	return nil
 }
 
-func (c *Client) newRequest(ctx context.Context, baseURL *url.URL, uri, method string, body interface{}, optQuery interface{}, optHeader interface{}) (req *http.Request, err error) {
-	if !checkURL(baseURL) {
+func (c *Client) newRequest(ctx context.Context, baseURL *url.URL, uri, method string, body interface{}, optQuery interface{}, optHeader interface{}, isRetry bool) (req *http.Request, err error) {
+	if c.invalidURL {
 		return nil, invalidBucketErr
+	}
+	if !checkURL(baseURL) {
+		host := baseURL.String()
+		if c.BaseURL.MetaInsightURL != baseURL || !metaInsightHostPrefix.MatchString(host) {
+			return nil, invalidBucketErr
+		}
 	}
 	uri, err = addURLOptions(uri, optQuery)
 	if err != nil {
@@ -252,6 +329,9 @@ func (c *Client) newRequest(ctx context.Context, baseURL *url.URL, uri, method s
 	}
 	if req.Header.Get("Content-Type") == "" && contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	if isRetry {
+		req.Header.Set("X-Cos-Sdk-Retry", "true")
 	}
 	if c.Host != "" {
 		req.Host = c.Host
@@ -317,7 +397,10 @@ func (c *Client) doAPI(ctx context.Context, req *http.Request, result interface{
 
 	if result != nil {
 		if w, ok := result.(io.Writer); ok {
-			io.Copy(w, resp.Body)
+			_, err = io.Copy(w, resp.Body)
+			if err != nil { // read body failed
+				return response, err
+			}
 		} else {
 			err = xml.NewDecoder(resp.Body).Decode(result)
 			if err == io.EOF {
@@ -347,6 +430,46 @@ type sendOptions struct {
 	// 是否禁用自动调用 resp.Body.Close()
 	// 自动调用 Close() 是为了能够重用连接
 	disableCloseBody bool
+	// 是否重试
+	isRetry bool
+}
+
+func toSwitchHost(oldURL *url.URL) *url.URL {
+	// 判断域名是否能够切换
+	if !switchHost.MatchString(oldURL.Host) {
+		return oldURL
+	}
+	newURL, _ := url.Parse(oldURL.String())
+	hostAndPort := strings.SplitN(newURL.Host, ":", 2)
+	newHost := hostAndPort[0]
+	// 加速域名不切换
+	if strings.HasSuffix(newHost, accelerateDomainSuffix) {
+		return oldURL
+	}
+	newHost = newHost[:len(newHost)-len(oldDomainSuffix)] + newDomainSuffix
+	if len(hostAndPort) > 1 {
+		newHost += ":" + hostAndPort[1]
+	}
+	newURL.Host = newHost
+	return newURL
+}
+
+func (c *Client) CheckRetrieable(u *url.URL, resp *Response, err error, secondLast bool) (*url.URL, bool) {
+	res := u
+	if err != nil && err != invalidBucketErr {
+		// 不重试
+		if resp != nil && resp.StatusCode < 500 {
+			return res, false
+		}
+		if c.Conf.RetryOpt.AutoSwitchHost && secondLast {
+			// 收不到报文 或者 不存在RequestId
+			if resp == nil || resp.Header.Get("X-Cos-Request-Id") == "" {
+				res = toSwitchHost(u)
+			}
+		}
+		return res, true
+	}
+	return res, false
 }
 
 func (c *Client) doRetry(ctx context.Context, opt *sendOptions) (resp *Response, err error) {
@@ -357,39 +480,39 @@ func (c *Client) doRetry(ctx context.Context, opt *sendOptions) (resp *Response,
 		}
 	}
 	count := 1
-	if count < c.Conf.RetryOpt.Count {
+	if c.Conf.RetryOpt.Count > 0 {
 		count = c.Conf.RetryOpt.Count
 	}
-	nr := 0
-	interval := c.Conf.RetryOpt.Interval
-	for nr < count {
+	retryErr := &RetryError{}
+	var retrieable bool
+	for nr := 0; nr < count; nr++ {
+		// 把上一次错误记录下来
+		if err != nil {
+			retryErr.Add(err)
+		}
+		opt.isRetry = nr > 0
 		resp, err = c.send(ctx, opt)
-		if err != nil && err != invalidBucketErr {
-			if resp != nil && resp.StatusCode <= 499 {
-				dobreak := true
-				for _, v := range c.Conf.RetryOpt.StatusCode {
-					if resp.StatusCode == v {
-						dobreak = false
-						break
-					}
-				}
-				if dobreak {
-					break
-				}
-			}
-			nr++
-			if interval > 0 && nr < count {
-				time.Sleep(interval)
+		opt.baseURL, retrieable = c.CheckRetrieable(opt.baseURL, resp, err, nr >= count-2)
+		if retrieable {
+			if c.Conf.RetryOpt.Interval > 0 && nr+1 < count {
+				time.Sleep(c.Conf.RetryOpt.Interval)
 			}
 			continue
 		}
 		break
 	}
+	// 最后一次非COS错误，输出三次结果
+	if err != nil {
+		if _, ok := err.(*ErrorResponse); !ok {
+			retryErr.Add(err)
+			err = retryErr
+		}
+	}
 	return
-
 }
+
 func (c *Client) send(ctx context.Context, opt *sendOptions) (resp *Response, err error) {
-	req, err := c.newRequest(ctx, opt.baseURL, opt.uri, opt.method, opt.body, opt.optQuery, opt.optHeader)
+	req, err := c.newRequest(ctx, opt.baseURL, opt.uri, opt.method, opt.body, opt.optQuery, opt.optHeader, opt.isRetry)
 	if err != nil {
 		return
 	}
@@ -471,8 +594,22 @@ func addHeaderOptions(ctx context.Context, header http.Header, opt interface{}) 
 }
 
 func checkURL(baseURL *url.URL) bool {
+	if baseURL == nil {
+		return false
+	}
+	if baseURL.Scheme == "" || baseURL.Hostname() == "" {
+		return false
+	}
 	host := baseURL.String()
 	if hostSuffix.MatchString(host) && !hostPrefix.MatchString(host) {
+		return false
+	}
+	return true
+}
+
+func CheckObjectKeySimplify(key string) bool {
+	res, err := filepath.Abs(key)
+	if res == "/" || err != nil {
 		return false
 	}
 	return true
@@ -511,12 +648,13 @@ type ACLHeaderOptions struct {
 
 // ACLGrantee is the param of ACLGrant
 type ACLGrantee struct {
-	Type        string `xml:"type,attr"`
-	UIN         string `xml:"uin,omitempty"`
-	URI         string `xml:"URI,omitempty"`
-	ID          string `xml:",omitempty"`
-	DisplayName string `xml:",omitempty"`
-	SubAccount  string `xml:"Subaccount,omitempty"`
+	TypeAttr    xml.Attr `xml:",attr,omitempty"`
+	Type        string   `xml:"type,attr,omitempty"`
+	UIN         string   `xml:"uin,omitempty"`
+	URI         string   `xml:"URI,omitempty"`
+	ID          string   `xml:",omitempty"`
+	DisplayName string   `xml:",omitempty"`
+	SubAccount  string   `xml:"Subaccount,omitempty"`
 }
 
 // ACLGrant is the param of ACLXml
@@ -530,6 +668,26 @@ type ACLXml struct {
 	XMLName           xml.Name `xml:"AccessControlPolicy"`
 	Owner             *Owner
 	AccessControlList []ACLGrant `xml:"AccessControlList>Grant,omitempty"`
+}
+
+type aclEnum struct {
+	Private                string
+	PublicRead             string
+	PublicReadWrite        string
+	AuthenticatedRead      string
+	Default                string
+	BucketOwnerRead        string
+	BucketOwnerFullControl string
+}
+
+var ACL = &aclEnum{
+	Private:                "private",
+	PublicRead:             "public-read",
+	PublicReadWrite:        "public-read-write",
+	AuthenticatedRead:      "authenticated-read",
+	Default:                "default",
+	BucketOwnerRead:        "bucket-owner-read",
+	BucketOwnerFullControl: "bucket-owner-full-control",
 }
 
 func decodeACL(resp *Response, res *ACLXml) {

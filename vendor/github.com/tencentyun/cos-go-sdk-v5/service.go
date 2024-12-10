@@ -26,6 +26,7 @@ type ServiceGetOptions struct {
 	Marker     string `url:"marker,omitempty"`
 	Range      string `url:"range,omitempty"`
 	CreateTime int64  `url:"create-time,omitempty"`
+	Region     string `url:"region,omitempty"`
 }
 
 // Get Service 接口实现获取该用户下所有Bucket列表。
@@ -47,6 +48,6 @@ func (s *ServiceService) Get(ctx context.Context, opt ...*ServiceGetOptions) (*S
 		optQuery: sopt,
 		result:   &res,
 	}
-	resp, err := s.client.send(ctx, &sendOpt)
+	resp, err := s.client.doRetry(ctx, &sendOpt)
 	return &res, resp, err
 }

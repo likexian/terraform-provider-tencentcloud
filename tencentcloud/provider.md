@@ -414,6 +414,7 @@ Cloud Object Storage(COS)
     tencentcloud_cos_batchs
     tencentcloud_cos_bucket_inventorys
     tencentcloud_cos_bucket_multipart_uploads
+    tencentcloud_cos_object_signed_url
 
   Resource
     tencentcloud_cos_bucket

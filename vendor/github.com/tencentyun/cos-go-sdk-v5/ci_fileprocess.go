@@ -21,9 +21,16 @@ type FileHashCodeResult struct {
 }
 
 type FileUncompressConfig struct {
-	Prefix         string `xml:",omitempty"`
-	PrefixReplaced string `xml:",omitempty"`
-	UnCompressKey  string `xml:",omitempty"`
+	Prefix         string                        `xml:",omitempty"`
+	PrefixReplaced string                        `xml:",omitempty"`
+	UnCompressKey  string                        `xml:",omitempty"`
+	Mode           string                        `xml:",omitempty"`
+	DownloadConfig *FileUncompressDownloadConfig `xml:",omitempty"`
+}
+
+type FileUncompressDownloadConfig struct {
+	Prefix string   `xml:",omitempty"`
+	Key    []string `xml:",omitempty"`
 }
 
 type FileUncompressResult struct {
@@ -32,20 +39,37 @@ type FileUncompressResult struct {
 	FileCount string `xml:",omitempty"`
 }
 
+type KeyConfig struct {
+	Key         string `xml:",omitempty"`
+	Folder      string `xml:",omitempty"`
+	Rename      string `xml:",omitempty"`
+	ImageParams string `xml:",omitempty"`
+}
+
 type FileCompressConfig struct {
-	Flatten     string   `xml:",omitempty"`
-	Format      string   `xml:",omitempty"`
-	UrlList     string   `xml:",omitempty"`
-	Prefix      string   `xml:",omitempty"`
-	Key         []string `xml:",omitempty"`
-	Type        string   `xml:",omitempty"`
-	CompressKey string   `xml:",omitempty"`
+	Flatten     string      `xml:",omitempty"`
+	Format      string      `xml:",omitempty"`
+	UrlList     string      `xml:",omitempty"`
+	Prefix      string      `xml:",omitempty"`
+	Key         []string    `xml:",omitempty"`
+	Type        string      `xml:",omitempty"`
+	CompressKey string      `xml:",omitempty"`
+	IgnoreError string      `xml:",omitempty"`
+	KeyConfig   []KeyConfig `xml:",omitempty"`
 }
 
 type FileCompressResult struct {
-	Region string `xml:",omitempty"`
-	Bucket string `xml:",omitempty"`
-	Object string `xml:",omitempty"`
+	Region            string       `xml:",omitempty"`
+	Bucket            string       `xml:",omitempty"`
+	Object            string       `xml:",omitempty"`
+	CompressFileCount int          `xml:",omitempty"`
+	ErrorCount        int          `xml:",omitempty"`
+	ErrorDetail       *ErrorDetail `xml:",omitempty"`
+}
+
+type ErrorDetail struct {
+	ErrorCount string   `xml:",omitempty"`
+	ErrorFile  []string `xml:",omitempty"`
 }
 
 type FileProcessInput FileCompressResult
@@ -89,6 +113,7 @@ type FileProcessJobsDetail struct {
 	StartTime    string                   `xml:",omitempty"`
 	EndTime      string                   `xml:",omitempty"`
 	QueueId      string                   `xml:",omitempty"`
+	Progress     int                      `xml:",omitempty"`
 	Input        *FileProcessInput        `xml:",omitempty"`
 	Operation    *FileProcessJobOperation `xml:",omitempty"`
 }
@@ -154,9 +179,10 @@ func (s *CIService) GetFileHash(ctx context.Context, name string, opt *GetFileHa
 
 // ZipPreviewResult 压缩包预览结果
 type ZipPreviewResult struct {
-	XMLName    xml.Name `xml:"Response"`
-	FileNumber int      `xml:"FileNumber,omitempty"`
-	Contents   []*struct {
+	XMLName     xml.Name `xml:"Response"`
+	FileNumber  int      `xml:"FileNumber,omitempty"`
+	IsTruncated bool     `xml:"IsTruncated,omitempty"`
+	Contents    []*struct {
 		Key              string `xml:"Key,omitempty"`
 		LastModified     string `xml:"LastModified,omitempty"`
 		UncompressedSize int    `xml:"UncompressedSize,omitempty"`
@@ -164,11 +190,15 @@ type ZipPreviewResult struct {
 }
 
 // ZipPreview 压缩包预览
-func (s *CIService) ZipPreview(ctx context.Context, name string) (*ZipPreviewResult, *Response, error) {
+func (s *CIService) ZipPreview(ctx context.Context, name, uncompress_key string) (*ZipPreviewResult, *Response, error) {
 	var res ZipPreviewResult
+	uriStr := "/" + encodeURIComponent(name) + "?ci-process=zippreview"
+	if uncompress_key != "" {
+		uriStr += "&uncompress-key=" + encodeURIComponent(uncompress_key)
+	}
 	sendOpt := sendOptions{
 		baseURL: s.client.BaseURL.BucketURL,
-		uri:     "/" + encodeURIComponent(name) + "?ci-process=zippreview",
+		uri:     uriStr,
 		method:  http.MethodGet,
 		result:  &res,
 	}

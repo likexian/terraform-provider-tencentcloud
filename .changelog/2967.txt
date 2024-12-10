@@ -1,0 +1,3 @@
+```release-note:new-data-source
+tencentcloud_cos_object_signed_url
+```

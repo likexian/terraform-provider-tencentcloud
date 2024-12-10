@@ -33,15 +33,26 @@ type InitiateMultipartUploadResult struct {
 //
 // https://www.qcloud.com/document/product/436/7746
 func (s *ObjectService) InitiateMultipartUpload(ctx context.Context, name string, opt *InitiateMultipartUploadOptions) (*InitiateMultipartUploadResult, *Response, error) {
+	var buff bytes.Buffer
 	var res InitiateMultipartUploadResult
 	sendOpt := sendOptions{
 		baseURL:   s.client.BaseURL.BucketURL,
 		uri:       "/" + encodeURIComponent(name) + "?uploads",
 		method:    http.MethodPost,
 		optHeader: opt,
-		result:    &res,
+		result:    &buff,
 	}
 	resp, err := s.client.doRetry(ctx, &sendOpt)
+	if err == nil {
+		err = xml.Unmarshal(buff.Bytes(), &res)
+		if err != nil {
+			// xml body存在非法字符(key存在非法字符)
+			if _, ok := err.(*xml.SyntaxError); ok {
+				err = UnmarshalInitMultiUploadResult(buff.Bytes(), &res)
+				return &res, resp, err
+			}
+		}
+	}
 	return &res, resp, err
 }
 
@@ -60,6 +71,9 @@ type ObjectUploadPartOptions struct {
 	XOptionHeader *http.Header `header:"-,omitempty" url:"-" xml:"-"`
 	// 上传进度, ProgressCompleteEvent不能表示对应API调用成功，API是否调用成功的判断标准为返回err==nil
 	Listener ProgressListener `header:"-" url:"-" xml:"-"`
+
+	// Upload方法使用
+	innerSwitchURL *url.URL `header:"-" url:"-" xml:"-"`
 }
 
 // UploadPart 请求实现在初始化以后的分块上传，支持的块的数量为1到10000，块的大小为1 MB 到5 GB。
@@ -71,8 +85,8 @@ type ObjectUploadPartOptions struct {
 //
 // https://www.qcloud.com/document/product/436/7750
 func (s *ObjectService) UploadPart(ctx context.Context, name, uploadID string, partNumber int, r io.Reader, uopt *ObjectUploadPartOptions) (*Response, error) {
-	if r == nil {
-		return nil, fmt.Errorf("reader is nil")
+	if (r == nil || r == http.NoBody) && uopt != nil && uopt.ContentLength != 0 {
+		return nil, fmt.Errorf("ContentLength must be 0 when reader is nil or http.NoBody.")
 	}
 	if err := CheckReaderLen(r); err != nil {
 		return nil, err
@@ -93,22 +107,67 @@ func (s *ObjectService) UploadPart(ctx context.Context, name, uploadID string, p
 			opt.ContentLength = totalBytes
 		}
 	}
-	reader := TeeReader(r, nil, totalBytes, nil)
-	if s.client.Conf.EnableCRC {
-		reader.writer = crc64.New(crc64.MakeTable(crc64.ECMA))
+	// 如果是io.Seeker，则重试
+	count := 1
+	var position int64
+	if seeker, ok := r.(io.Seeker); ok {
+		// 记录原始位置
+		position, err = seeker.Seek(0, io.SeekCurrent)
+		if err == nil && s.client.Conf.RetryOpt.Count > 0 {
+			count = s.client.Conf.RetryOpt.Count
+		}
 	}
-	if opt != nil && opt.Listener != nil {
-		reader.listener = opt.Listener
+	var resp *Response
+	var retrieable bool
+	sUrl := s.client.BaseURL.BucketURL
+	if opt.innerSwitchURL != nil {
+		sUrl = opt.innerSwitchURL
 	}
-	u := fmt.Sprintf("/%s?partNumber=%d&uploadId=%s", encodeURIComponent(name), partNumber, uploadID)
-	sendOpt := sendOptions{
-		baseURL:   s.client.BaseURL.BucketURL,
-		uri:       u,
-		method:    http.MethodPut,
-		optHeader: opt,
-		body:      reader,
+	retryErr := &RetryError{}
+	for nr := 0; nr < count; nr++ {
+		var reader io.Reader
+		if r != nil && r != http.NoBody {
+			tReader := TeeReader(r, nil, totalBytes, nil)
+			if s.client.Conf.EnableCRC {
+				tReader.writer = crc64.New(crc64.MakeTable(crc64.ECMA))
+			}
+			if opt != nil && opt.Listener != nil {
+				tReader.listener = opt.Listener
+			}
+			reader = tReader
+		}
+		u := fmt.Sprintf("/%s?partNumber=%d&uploadId=%s", encodeURIComponent(name), partNumber, uploadID)
+		sendOpt := sendOptions{
+			baseURL:   sUrl,
+			uri:       u,
+			method:    http.MethodPut,
+			optHeader: opt,
+			body:      reader,
+		}
+		// 把上一次错误记录下来
+		if err != nil {
+			retryErr.Add(err)
+		}
+		resp, err = s.client.send(ctx, &sendOpt)
+		sUrl, retrieable = s.client.CheckRetrieable(sUrl, resp, err, nr >= count-2)
+		if retrieable && nr+1 < count {
+			if seeker, ok := r.(io.Seeker); ok {
+				_, e := seeker.Seek(position, io.SeekStart)
+				if e != nil {
+					break
+				}
+				continue
+			}
+		}
+		break
 	}
-	resp, err := s.client.send(ctx, &sendOpt)
+	if err != nil {
+		if _, ok := err.(*ErrorResponse); !ok {
+			retryErr.Add(err)
+			err = retryErr
+		}
+	}
+
 	return resp, err
 }
 
@@ -201,6 +260,7 @@ func (o ObjectList) Less(i, j int) bool { // rewrite the Less method from small 
 // https://www.qcloud.com/document/product/436/7742
 func (s *ObjectService) CompleteMultipartUpload(ctx context.Context, name, uploadID string, opt *CompleteMultipartUploadOptions) (*CompleteMultipartUploadResult, *Response, error) {
 	u := fmt.Sprintf("/%s?uploadId=%s", encodeURIComponent(name), uploadID)
+	var buff bytes.Buffer
 	var res CompleteMultipartUploadResult
 	sendOpt := sendOptions{
 		baseURL:   s.client.BaseURL.BucketURL,
@@ -208,16 +268,30 @@ func (s *ObjectService) CompleteMultipartUpload(ctx context.Context, name, uploa
 		method:    http.MethodPost,
 		optHeader: opt,
 		body:      opt,
-		result:    &res,
+		result:    &buff,
 	}
 	resp, err := s.client.doRetry(ctx, &sendOpt)
 	// If the error occurs during the copy operation, the error response is embedded in the 200 OK response. This means that a 200 OK response can contain either a success or an error.
 	if err == nil && resp.StatusCode == 200 {
+		err = xml.Unmarshal(buff.Bytes(), &res)
+		if err != nil {
+			// xml body存在非法字符(key存在非法字符)
+			if _, ok := err.(*xml.SyntaxError); ok {
+				err = UnmarshalCompleteMultiUploadResult(buff.Bytes(), &res)
+				if err != nil {
+					return &res, resp, err
+				}
+			}
+		}
 		if res.ETag == "" {
-			return &res, resp, errors.New("response 200 OK, but body contains an error")
+			return &res, resp, fmt.Errorf("response 200 OK, but body contains an error, %v", buff.Bytes())
 		}
 	}
 	return &res, resp, err
+}
+
+type AbortMultipartUploadOptions struct {
+	XOptionHeader *http.Header `header:"-,omitempty" url:"-" xml:"-"`
 }
 
 // AbortMultipartUpload 用来实现舍弃一个分块上传并删除已上传的块。当您调用Abort Multipart Upload时，
@@ -226,15 +300,25 @@ func (s *ObjectService) CompleteMultipartUpload(ctx context.Context, name, uploa
 // 建议您及时完成分块上传或者舍弃分块上传，因为已上传但是未终止的块会占用存储空间进而产生存储费用。
 //
 // https://www.qcloud.com/document/product/436/7740
-func (s *ObjectService) AbortMultipartUpload(ctx context.Context, name, uploadID string) (*Response, error) {
+func (s *ObjectService) AbortMultipartUpload(ctx context.Context, name, uploadID string, opt ...*AbortMultipartUploadOptions) (*Response, error) {
 	if len(name) == 0 || name == "/" {
 		return nil, errors.New("empty object name")
 	}
+	// When use "" string might call the delete bucket interface
+	if s.client.Conf.ObjectKeySimplifyCheck && !CheckObjectKeySimplify("/"+name) {
+		return nil, ObjectKeySimplifyCheckErr
+	}
+
+	var optHeader *AbortMultipartUploadOptions
+	if len(opt) > 0 {
+		optHeader = opt[0]
+	}
 	u := fmt.Sprintf("/%s?uploadId=%s", encodeURIComponent(name), uploadID)
 	sendOpt := sendOptions{
-		baseURL: s.client.BaseURL.BucketURL,
-		uri:     u,
-		method:  http.MethodDelete,
+		baseURL:   s.client.BaseURL.BucketURL,
+		uri:       u,
+		method:    http.MethodDelete,
+		optHeader: optHeader,
 	}
 	resp, err := s.client.doRetry(ctx, &sendOpt)
 	return resp, err
@@ -272,11 +356,25 @@ type CopyPartResult struct {
 //
 // https://www.qcloud.com/document/product/436/7750
 func (s *ObjectService) CopyPart(ctx context.Context, name, uploadID string, partNumber int, sourceURL string, opt *ObjectCopyPartOptions) (*CopyPartResult, *Response, error) {
-	if opt == nil {
-		opt = &ObjectCopyPartOptions{}
+	if strings.HasPrefix(sourceURL, "http://") || strings.HasPrefix(sourceURL, "https://") {
+		return nil, nil, errors.New("sourceURL format is invalid.")
 	}
-	opt.XCosCopySource = sourceURL
-	u := fmt.Sprintf("/%s?partNumber=%d&uploadId=%s", encodeURIComponent(name), partNumber, uploadID)
+	surl := strings.SplitN(sourceURL, "/", 2)
+	if len(surl) < 2 {
+		return nil, nil, errors.New(fmt.Sprintf("x-cos-copy-source format error: %s", sourceURL))
+	}
+	var u string
+	keyAndVer := strings.SplitN(surl[1], "?", 2)
+	if len(keyAndVer) < 2 {
+		u = fmt.Sprintf("%s/%s", surl[0], encodeURIComponent(surl[1], []byte{'/'}))
+	} else {
+		u = fmt.Sprintf("%v/%v?%v", surl[0], encodeURIComponent(keyAndVer[0], []byte{'/'}), encodeURIComponent(keyAndVer[1], []byte{'='}))
+	}
+
+	opt = cloneObjectCopyPartOptions(opt)
+	opt.XCosCopySource = u
+
+	u = fmt.Sprintf("/%s?partNumber=%d&uploadId=%s", encodeURIComponent(name), partNumber, uploadID)
 	var res CopyPartResult
 	var bs bytes.Buffer
 	sendOpt := sendOptions{
@@ -290,9 +388,6 @@ func (s *ObjectService) CopyPart(ctx context.Context, name, uploadID string, par
 
 	if err == nil { // 请求正常
 		err = xml.Unmarshal(bs.Bytes(), &res) // body 正常返回
-		if err == io.EOF {
-			err = nil
-		}
 		// If the error occurs during the copy operation, the error response is embedded in the 200 OK response. This means that a 200 OK response can contain either a success or an error.
 		if resp != nil && resp.StatusCode == 200 {
 			if err != nil {
@@ -405,45 +500,54 @@ func copyworker(ctx context.Context, s *ObjectService, jobs <-chan *CopyJobs, re
 	}
 }
 
-func (s *ObjectService) innerHead(ctx context.Context, sourceURL string, opt *ObjectHeadOptions, id []string) (resp *Response, err error) {
+func (s *ObjectService) innerHead(ctx context.Context, sourceURL string, opt *ObjectHeadOptions, id []string) (*Response, error) {
 	surl := strings.SplitN(sourceURL, "/", 2)
 	if len(surl) < 2 {
-		err = errors.New(fmt.Sprintf("sourceURL format error: %s", sourceURL))
-		return
+		return nil, fmt.Errorf("sourceURL format error: %s", sourceURL)
 	}
 
 	u, err := url.Parse(fmt.Sprintf("http://%s", surl[0]))
 	if err != nil {
-		return
+		return nil, err
 	}
 	b := &BaseURL{BucketURL: u}
 	client := NewClient(b, &http.Client{
 		Transport: s.client.client.Transport,
 	})
 	if len(id) > 0 {
-		resp, err = client.Object.Head(ctx, surl[1], nil, id[0])
+		return client.Object.Head(ctx, surl[1], nil, id[0])
 	} else {
-		resp, err = client.Object.Head(ctx, surl[1], nil)
+		keyAndVer := strings.SplitN(surl[1], "?", 2)
+		if len(keyAndVer) < 2 {
+			// 不存在versionId
+			return client.Object.Head(ctx, surl[1], nil)
+		} else {
+			q, err := url.ParseQuery(keyAndVer[1])
+			if err != nil {
+				return nil, fmt.Errorf("sourceURL format error: %s", sourceURL)
+			}
+			return client.Object.Head(ctx, keyAndVer[0], nil, q.Get("versionId"))
+		}
 	}
-	return
+	return nil, fmt.Errorf("Head Err")
 }
 
 // 如果源对象大于5G，则采用分块复制的方式进行拷贝，此时源对象的元信息如果COPY
 func (s *ObjectService) MultiCopy(ctx context.Context, name string, sourceURL string, opt *MultiCopyOptions, id ...string) (*ObjectCopyResult, *Response, error) {
+	if strings.HasPrefix(sourceURL, "http://") || strings.HasPrefix(sourceURL, "https://") {
+		return nil, nil, errors.New("sourceURL format is invalid.")
+	}
+
 	resp, err := s.innerHead(ctx, sourceURL, nil, id)
 	if err != nil {
 		return nil, nil, err
 	}
 	totalBytes := resp.ContentLength
-	surl := strings.SplitN(sourceURL, "/", 2)
-	if len(surl) < 2 {
-		return nil, nil, errors.New(fmt.Sprintf("x-cos-copy-source format error: %s", sourceURL))
-	}
 	var u string
 	if len(id) == 1 {
-		u = fmt.Sprintf("%s/%s?versionId=%s", surl[0], encodeURIComponent(surl[1]), id[0])
+		u = fmt.Sprintf("%s?versionId=%s", sourceURL, id[0])
 	} else if len(id) == 0 {
-		u = fmt.Sprintf("%s/%s", surl[0], encodeURIComponent(surl[1]))
+		u = sourceURL
 	} else {
 		return nil, nil, errors.New("wrong params")
 	}
@@ -455,7 +559,8 @@ func (s *ObjectService) MultiCopy(ctx context.Context, name string, sourceURL st
 	if err != nil {
 		return nil, nil, err
 	}
-	if partNum == 0 || (totalBytes < singleUploadMaxLength && !opt.useMulti) {
+
+	if partNum == 0 || (totalBytes <= singleUploadMaxLength && !opt.useMulti) {
 		if len(id) > 0 {
 			return s.Copy(ctx, name, sourceURL, opt.OptCopy, id[0])
 		} else {

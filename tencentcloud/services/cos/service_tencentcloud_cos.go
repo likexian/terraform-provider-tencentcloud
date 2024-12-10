@@ -1272,7 +1272,7 @@ func (me *CosService) GetBucketPullOrigin(ctx context.Context, bucket string) (r
 	for _, rule := range originConfig.Rule {
 		item := make(map[string]interface{})
 		item["priority"] = helper.Int(rule.RulePriority)
-		item["host"] = helper.String(rule.OriginInfo.HostInfo)
+		item["host"] = helper.String(rule.OriginInfo.HostInfo.HostName)
 
 		if rule.OriginCondition != nil {
 			item["prefix"] = helper.String(rule.OriginCondition.Prefix)
@@ -1311,7 +1311,7 @@ func (me *CosService) GetBucketPullOrigin(ctx context.Context, bucket string) (r
 		}
 
 		if rule.OriginInfo.FileInfo != nil {
-			item["host"] = helper.String(rule.OriginInfo.HostInfo)
+			item["host"] = helper.String(rule.OriginInfo.HostInfo.HostName)
 			//item["redirect_prefix"] = helper.String(rule.OriginInfo.FileInfo.Prefix)
 			//item["redirect_suffix"] = helper.String(rule.OriginInfo.FileInfo.Suffix)
 		}
