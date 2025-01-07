@@ -309,7 +309,7 @@ func ResourceTencentCloudCdnDomain() *schema.Resource {
 							Optional:    true,
 							Computed:    true,
 							Elem:        &schema.Schema{Type: schema.TypeString},
-							Description: "Tls version settings, only support some Advanced domain names, support settings TLSv1, TLSV1.1, TLSV1.2, TLSv1.3, when modifying must open consecutive versions.",
+							Description: "Tls version settings, only support some Advanced domain names, support settings TLSv1, TLSv1.1, TLSv1.2, TLSv1.3, when modifying must open consecutive versions.",
 						},
 					},
 				},

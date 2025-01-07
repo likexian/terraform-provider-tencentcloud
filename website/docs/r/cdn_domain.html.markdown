@@ -300,7 +300,7 @@ The `https_config` object supports the following:
 * `ocsp_stapling_switch` - (Optional, String) OCSP configuration switch. Valid values are `on` and `off`. and default value is `off`.
 * `server_certificate_config` - (Optional, List) Server certificate configuration information.
 * `spdy_switch` - (Optional, String) Spdy configuration switch. Valid values are `on` and `off`. and default value is `off`. This parameter is for white-list customer.
-* `tls_versions` - (Optional, List) Tls version settings, only support some Advanced domain names, support settings TLSv1, TLSV1.1, TLSV1.2, TLSv1.3, when modifying must open consecutive versions.
+* `tls_versions` - (Optional, List) Tls version settings, only support some Advanced domain names, support settings TLSv1, TLSv1.1, TLSv1.2, TLSv1.3, when modifying must open consecutive versions.
 * `verify_client` - (Optional, String) Client certificate authentication feature. Valid values are `on` and `off`. and default value is `off`.
 
 The `hw_private_access` object supports the following:
