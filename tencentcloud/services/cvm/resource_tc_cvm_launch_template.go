@@ -738,17 +738,17 @@ func resourceTencentCloudCvmLaunchTemplateCreate(d *schema.ResourceData, meta in
 
 	if dMap, ok := helper.InterfacesHeadMap(d, "internet_accessible"); ok {
 		internetAccessible := cvm.InternetAccessible{}
-		if v, ok := dMap["internet_charge_type"]; ok {
-			internetAccessible.InternetChargeType = helper.String(v.(string))
+		if v, ok := dMap["internet_charge_type"].(string); ok && v != "" {
+			internetAccessible.InternetChargeType = helper.String(v)
 		}
-		if v, ok := dMap["internet_max_bandwidth_out"]; ok {
-			internetAccessible.InternetMaxBandwidthOut = helper.IntInt64(v.(int))
+		if v, ok := dMap["internet_max_bandwidth_out"].(int); ok && v != 0 {
+			internetAccessible.InternetMaxBandwidthOut = helper.IntInt64(v)
 		}
-		if v, ok := dMap["public_ip_assigned"]; ok {
-			internetAccessible.PublicIpAssigned = helper.Bool(v.(bool))
+		if v, ok := dMap["public_ip_assigned"].(bool); ok && v {
+			internetAccessible.PublicIpAssigned = helper.Bool(v)
 		}
-		if v, ok := dMap["bandwidth_package_id"]; ok {
-			internetAccessible.BandwidthPackageId = helper.String(v.(string))
+		if v, ok := dMap["bandwidth_package_id"].(string); ok && v != "" {
+			internetAccessible.BandwidthPackageId = helper.String(v)
 		}
 		request.InternetAccessible = &internetAccessible
 	}
