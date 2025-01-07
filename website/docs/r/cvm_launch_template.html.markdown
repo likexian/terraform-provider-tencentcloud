@@ -58,7 +58,6 @@ The following arguments are supported:
 * `security_group_ids` - (Optional, Set: [`String`], ForceNew) The security group ID of instance. If this parameter is not specified, the default security group is bound.
 * `system_disk` - (Optional, List, ForceNew) System disk configuration information of the instance. If this parameter is not specified, it is assigned according to the system default.
 * `tag_specification` - (Optional, List, ForceNew) Tag description list.
-* `tags` - (Optional, Map, ForceNew) Tag description list.
 * `user_data` - (Optional, String, ForceNew) The data of users.
 * `virtual_private_cloud` - (Optional, List, ForceNew) The configuration information of VPC. If this parameter is not specified, the basic network is used by default.
 

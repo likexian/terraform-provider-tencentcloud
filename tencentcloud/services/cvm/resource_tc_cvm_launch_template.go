@@ -593,13 +593,6 @@ func ResourceTencentCloudCvmLaunchTemplate() *schema.Resource {
 				Type:        schema.TypeBool,
 				Description: "Instance destruction protection flag.",
 			},
-
-			"tags": {
-				Type:        schema.TypeMap,
-				ForceNew:    true,
-				Optional:    true,
-				Description: "Tag description list.",
-			},
 		},
 	}
 }
