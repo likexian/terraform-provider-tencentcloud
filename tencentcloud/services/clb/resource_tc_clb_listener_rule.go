@@ -134,21 +134,48 @@ func ResourceTencentCloudClbListenerRule() *schema.Resource {
 				Description:  "Methods of health check. NOTES: Only supports listeners of `HTTP` and `HTTPS` protocol. The default is `HEAD`, the available value are `HEAD` and `GET`.",
 			},
 			"certificate_ssl_mode": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				ForceNew:     true,
-				ValidateFunc: tccommon.ValidateAllowedStringValue(CERT_SSL_MODE),
-				Description:  "Type of certificate. Valid values: `UNIDIRECTIONAL`, `MUTUAL`. NOTES: Only supports listeners of HTTPS protocol.",
+				Type:          schema.TypeString,
+				Optional:      true,
+				ForceNew:      true,
+				ConflictsWith: []string{"multi_cert_info"},
+				ValidateFunc:  tccommon.ValidateAllowedStringValue(CERT_SSL_MODE),
+				Description:   "Type of certificate. Valid values: `UNIDIRECTIONAL`, `MUTUAL`. NOTES: Only supports listeners of HTTPS protocol.",
 			},
 			"certificate_id": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				Description: "ID of the server certificate. NOTES: Only supports listeners of HTTPS protocol.",
+				Type:          schema.TypeString,
+				Optional:      true,
+				ConflictsWith: []string{"multi_cert_info"},
+				Description:   "ID of the server certificate. NOTES: Only supports listeners of HTTPS protocol.",
 			},
 			"certificate_ca_id": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				Description: "ID of the client certificate. NOTES: Only supports listeners of HTTPS protocol.",
+				Type:          schema.TypeString,
+				Optional:      true,
+				ConflictsWith: []string{"multi_cert_info"},
+				Description:   "ID of the client certificate. NOTES: Only supports listeners of HTTPS protocol.",
+			},
+			"multi_cert_info": {
+				Type:          schema.TypeList,
+				Optional:      true,
+				MaxItems:      1,
+				ConflictsWith: []string{"certificate_ssl_mode", "certificate_id", "certificate_ca_id"},
+				Description:   "Certificate information. You can specify multiple server-side certificates with different algorithm types. This parameter is only applicable to HTTPS listeners with the SNI feature not enabled. Certificate and MultiCertInfo cannot be specified at the same time.",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"ssl_mode": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ForceNew:     true,
+							ValidateFunc: tccommon.ValidateAllowedStringValue(CERT_SSL_MODE),
+							Description:  "Authentication type. Values: UNIDIRECTIONAL (one-way authentication), MUTUAL (two-way authentication).",
+						},
+						"cert_id_list": {
+							Type:        schema.TypeSet,
+							Required:    true,
+							Description: "List of server certificate ID.",
+							Elem:        &schema.Schema{Type: schema.TypeString},
+						},
+					},
+				},
 			},
 			"session_expire_time": {
 				Type:         schema.TypeInt,
@@ -330,6 +357,19 @@ func resourceTencentCloudClbListenerRuleCreate(d *schema.ResourceData, meta inte
 			return fmt.Errorf("[CHECK][CLB listener rule][Create] check: certificate para can only be set with rule of linstener with protocol 'HTTPS'")
 		}
 		rule.Certificate = certificateInput
+	}
+
+	multiCertificateSetFlag, multiCertInput, certErr := checkMultiCertificateInputPara(ctx, d, meta)
+	if certErr != nil {
+		return certErr
+	}
+
+	if multiCertificateSetFlag {
+		rule.MultiCertInfo = multiCertInput
+	} else {
+		if protocol == CLB_LISTENER_PROTOCOL_TCPSSL {
+			return fmt.Errorf("[CHECK][CLB listener][Create] check: certificated need to be set when protocol is HTTPS")
+		}
 	}
 
 	if v, ok := d.GetOkExists("quic"); ok {
@@ -576,12 +616,35 @@ func resourceTencentCloudClbListenerRuleRead(d *schema.ResourceData, meta interf
 	}
 
 	if instance.Certificate != nil {
-		_ = d.Set("certificate_ssl_mode", instance.Certificate.SSLMode)
-		_ = d.Set("certificate_id", instance.Certificate.CertId)
-		if instance.Certificate.CertCaId != nil {
-			_ = d.Set("certificate_ca_id", instance.Certificate.CertCaId)
+		// check single cert or multi cert
+		if instance.Certificate.ExtCertIds != nil && len(instance.Certificate.ExtCertIds) > 0 {
+			multiCertInfo := make([]map[string]interface{}, 0, 1)
+			multiCert := make(map[string]interface{}, 0)
+			certIds := make([]string, 0)
+			if instance.Certificate.SSLMode != nil {
+				multiCert["ssl_mode"] = *instance.Certificate.SSLMode
+			}
+
+			if instance.Certificate.CertId != nil {
+				certIds = append(certIds, *instance.Certificate.CertId)
+			}
+
+			for _, item := range instance.Certificate.ExtCertIds {
+				certIds = append(certIds, *item)
+			}
+
+			multiCert["cert_id_list"] = certIds
+			multiCertInfo = append(multiCertInfo, multiCert)
+			_ = d.Set("multi_cert_info", multiCertInfo)
+		} else {
+			_ = d.Set("certificate_ssl_mode", instance.Certificate.SSLMode)
+			_ = d.Set("certificate_id", instance.Certificate.CertId)
+			if instance.Certificate.CertCaId != nil {
+				_ = d.Set("certificate_ca_id", instance.Certificate.CertCaId)
+			}
 		}
 	}
+
 	if instance.OAuth != nil {
 		oath := make(map[string]interface{})
 		if instance.OAuth.OAuthEnable != nil {
@@ -764,6 +827,22 @@ func resourceTencentCloudClbListenerRuleUpdate(d *schema.ResourceData, meta inte
 				return fmt.Errorf("[CHECK][CLB listener rule][Create] check: certificate para can only be set with rule of linstener with protocol 'HTTPS'")
 			}
 			domainRequest.Certificate = certificateInput
+		}
+	}
+
+	if d.HasChange("multi_cert_info") {
+		domainChanged = true
+		multiCertificateSetFlag, multiCertInput, certErr := checkMultiCertificateInputPara(ctx, d, meta)
+		if certErr != nil {
+			return certErr
+		}
+
+		if multiCertificateSetFlag {
+			domainRequest.MultiCertInfo = multiCertInput
+		} else {
+			if protocol == CLB_LISTENER_PROTOCOL_TCPSSL {
+				return fmt.Errorf("[CHECK][CLB listener][Create] check: certificated need to be set when protocol is HTTPS")
+			}
 		}
 	}
 

@@ -48,6 +48,13 @@ resource "tencentcloud_clb_listener_rule" "example" {
   health_check_http_domain   = "check.com"
   health_check_http_method   = "GET"
   scheduler                  = "WRR"
+  multi_cert_info {
+    ssl_mode = "UNIDIRECTIONAL"
+    cert_id_list = [
+      "LCYouprI",
+      "JVO1alRN",
+    ]
+  }
 }
 ```
 

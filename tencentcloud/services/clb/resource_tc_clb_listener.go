@@ -383,7 +383,7 @@ func resourceTencentCloudClbListenerCreate(d *schema.ResourceData, meta interfac
 			if vv {
 				vvv = 1
 			} else {
-				if !certificateSetFlag {
+				if !certificateSetFlag && !multiCertificateSetFlag {
 					return fmt.Errorf("[CHECK][CLB listener][Create] check: certificated need to be set when protocol is HTTPS")
 				}
 			}

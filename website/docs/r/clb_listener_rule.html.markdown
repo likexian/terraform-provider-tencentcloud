@@ -59,6 +59,13 @@ resource "tencentcloud_clb_listener_rule" "example" {
   health_check_http_domain   = "check.com"
   health_check_http_method   = "GET"
   scheduler                  = "WRR"
+  multi_cert_info {
+    ssl_mode = "UNIDIRECTIONAL"
+    cert_id_list = [
+      "LCYouprI",
+      "JVO1alRN",
+    ]
+  }
 }
 ```
 
@@ -87,11 +94,17 @@ The following arguments are supported:
 * `health_check_type` - (Optional, String) Type of health check. Valid value is `CUSTOM`, `PING`, `TCP`, `HTTP`, `HTTPS`, `GRPC`, `GRPCS`.
 * `health_check_unhealth_num` - (Optional, Int) Unhealthy threshold of health check, and the default is `3`. If the unhealthy result is returned 3 consecutive times, indicates that the forwarding is abnormal. The value range is [2-10].  NOTES: TCP/UDP/TCP_SSL listener allows direct configuration, HTTP/HTTPS listener needs to be configured in `tencentcloud_clb_listener_rule`.
 * `http2_switch` - (Optional, Bool) Indicate to apply HTTP2.0 protocol or not.
+* `multi_cert_info` - (Optional, List) Certificate information. You can specify multiple server-side certificates with different algorithm types. This parameter is only applicable to HTTPS listeners with the SNI feature not enabled. Certificate and MultiCertInfo cannot be specified at the same time.
 * `oauth` - (Optional, List) OAuth configuration information.
 * `quic` - (Optional, Bool) Whether to enable QUIC. Note: QUIC can be enabled only for HTTPS domain names.
 * `scheduler` - (Optional, String) Scheduling method of the CLB listener rules. Valid values: `WRR`, `IP HASH`, `LEAST_CONN`. The default is `WRR`.  NOTES: TCP/UDP/TCP_SSL listener allows direct configuration, HTTP/HTTPS listener needs to be configured in `tencentcloud_clb_listener_rule`.
 * `session_expire_time` - (Optional, Int) Time of session persistence within the CLB listener. NOTES: Available when scheduler is specified as `WRR`, and not available when listener protocol is `TCP_SSL`.  NOTES: TCP/UDP/TCP_SSL listener allows direct configuration, HTTP/HTTPS listener needs to be configured in `tencentcloud_clb_listener_rule`.
 * `target_type` - (Optional, String, ForceNew) Backend target type. Valid values: `NODE`, `TARGETGROUP`. `NODE` means to bind ordinary nodes, `TARGETGROUP` means to bind target group.
+
+The `multi_cert_info` object supports the following:
+
+* `cert_id_list` - (Required, Set) List of server certificate ID.
+* `ssl_mode` - (Required, String, ForceNew) Authentication type. Values: UNIDIRECTIONAL (one-way authentication), MUTUAL (two-way authentication).
 
 The `oauth` object supports the following:
 
