@@ -986,7 +986,7 @@ func resourceTencentCloudInstanceRead(d *schema.ResourceData, meta interface{}) 
 	_ = d.Set("tags", tags)
 
 	// set system_disk_name
-	if instance.SystemDisk.DiskId != nil {
+	if instance.SystemDisk.DiskId != nil && strings.HasPrefix(*instance.SystemDisk.DiskId, "disk-") {
 		err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
 			disks, err := cbsService.DescribeDiskList(ctx, []*string{instance.SystemDisk.DiskId})
 			if err != nil {
@@ -1028,7 +1028,7 @@ func resourceTencentCloudInstanceRead(d *schema.ResourceData, meta interface{}) 
 			value := item.(map[string]interface{})
 			if v, ok := value["data_disk_id"]; ok && v != nil {
 				diskId := v.(string)
-				if diskId != "" {
+				if diskId != "" && strings.HasPrefix(diskId, "disk-") {
 					dataDiskIds = append(dataDiskIds, &diskId)
 					hasDataDisksId = true
 				}
@@ -1092,102 +1092,30 @@ func resourceTencentCloudInstanceRead(d *schema.ResourceData, meta interface{}) 
 			}
 		}
 
-		err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
-			disks, err := cbsService.DescribeDiskList(ctx, diskIds)
-			if err != nil {
-				return tccommon.RetryError(err)
-			}
-
-			for i := range disks {
-				disk := disks[i]
-				if *disk.DiskState == "EXPANDING" {
-					return resource.RetryableError(fmt.Errorf("data_disk[%d] is expending", i))
-				}
-
-				diskSizeMap[*disk.DiskId] = disk.DiskSize
-				if hasDataDisks {
-					items := strings.Split(*disk.DiskName, "_")
-					diskOrder := items[len(items)-1]
-					diskOrderInt, err := strconv.Atoi(diskOrder)
-					if err != nil {
-						isCombineDataDisks = true
-						continue
-					}
-
-					diskOrderMap[*disk.DiskId] = diskOrderInt
-				}
-			}
-
-			return nil
-		})
-
-		if err != nil {
-			return err
-		}
-
-		tmpDataDisks := make([]interface{}, 0, len(instance.DataDisks))
-		if v, ok := d.GetOk("data_disks"); ok {
-			tmpDataDisks = v.([]interface{})
-		}
-
-		for _, disk := range instance.DataDisks {
-			dataDisk := make(map[string]interface{}, 5)
-			dataDisk["data_disk_id"] = disk.DiskId
-			if disk.DiskId == nil {
-				dataDisk["data_disk_size"] = disk.DiskSize
-			} else if size, ok := diskSizeMap[*disk.DiskId]; ok {
-				dataDisk["data_disk_size"] = size
-			}
-
-			dataDisk["data_disk_type"] = disk.DiskType
-			dataDisk["data_disk_snapshot_id"] = disk.SnapshotId
-			dataDisk["delete_with_instance"] = disk.DeleteWithInstance
-			dataDisk["encrypt"] = disk.Encrypt
-			dataDisk["throughput_performance"] = disk.ThroughputPerformance
-			dataDiskList = append(dataDiskList, dataDisk)
-		}
-
-		if hasDataDisks && !isCombineDataDisks {
-			sort.SliceStable(dataDiskList, func(idx1, idx2 int) bool {
-				dataDiskIdIdx1 := *dataDiskList[idx1]["data_disk_id"].(*string)
-				dataDiskIdIdx2 := *dataDiskList[idx2]["data_disk_id"].(*string)
-				return diskOrderMap[dataDiskIdIdx1] < diskOrderMap[dataDiskIdIdx2]
-			})
-		}
-
-		// set data disk delete_with_instance_prepaid
-		for i := range dataDiskList {
-			dataDiskList[i]["delete_with_instance_prepaid"] = false
-			if hasDataDisks {
-				tmpDataDisk := tmpDataDisks[i].(map[string]interface{})
-				if deleteWithInstancePrepaidBool, ok := tmpDataDisk["delete_with_instance_prepaid"].(bool); ok {
-					dataDiskList[i]["delete_with_instance_prepaid"] = deleteWithInstancePrepaidBool
-				}
-			}
-		}
-
-		// set data disk name
-		finalDiskIds := make([]*string, 0, len(dataDiskList))
-		for _, item := range dataDiskList {
-			diskId := item["data_disk_id"].(*string)
-			finalDiskIds = append(finalDiskIds, diskId)
-		}
-
-		if len(finalDiskIds) != 0 {
+		if len(diskIds) > 0 {
 			err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
-				disks, err := cbsService.DescribeDiskList(ctx, finalDiskIds)
+				disks, err := cbsService.DescribeDiskList(ctx, diskIds)
 				if err != nil {
 					return tccommon.RetryError(err)
 				}
 
-				for _, disk := range disks {
-					diskId := disk.DiskId
-					for _, v := range dataDiskList {
-						tmpDiskId := v["data_disk_id"].(*string)
-						if *diskId == *tmpDiskId {
-							v["data_disk_name"] = disk.DiskName
-							break
+				for i := range disks {
+					disk := disks[i]
+					if *disk.DiskState == "EXPANDING" {
+						return resource.RetryableError(fmt.Errorf("data_disk[%d] is expending", i))
+					}
+
+					diskSizeMap[*disk.DiskId] = disk.DiskSize
+					if hasDataDisks {
+						items := strings.Split(*disk.DiskName, "_")
+						diskOrder := items[len(items)-1]
+						diskOrderInt, err := strconv.Atoi(diskOrder)
+						if err != nil {
+							isCombineDataDisks = true
+							continue
 						}
+
+						diskOrderMap[*disk.DiskId] = diskOrderInt
 					}
 				}
 
@@ -1197,9 +1125,87 @@ func resourceTencentCloudInstanceRead(d *schema.ResourceData, meta interface{}) 
 			if err != nil {
 				return err
 			}
-		}
 
-		_ = d.Set("data_disks", dataDiskList)
+			tmpDataDisks := make([]interface{}, 0, len(instance.DataDisks))
+			if v, ok := d.GetOk("data_disks"); ok {
+				tmpDataDisks = v.([]interface{})
+			}
+
+			for _, disk := range instance.DataDisks {
+				dataDisk := make(map[string]interface{}, 5)
+				if !strings.HasPrefix(*disk.DiskId, "disk-") {
+					continue
+				}
+
+				dataDisk["data_disk_id"] = disk.DiskId
+				if disk.DiskId == nil {
+					dataDisk["data_disk_size"] = disk.DiskSize
+				} else if size, ok := diskSizeMap[*disk.DiskId]; ok {
+					dataDisk["data_disk_size"] = size
+				}
+
+				dataDisk["data_disk_type"] = disk.DiskType
+				dataDisk["data_disk_snapshot_id"] = disk.SnapshotId
+				dataDisk["delete_with_instance"] = disk.DeleteWithInstance
+				dataDisk["encrypt"] = disk.Encrypt
+				dataDisk["throughput_performance"] = disk.ThroughputPerformance
+				dataDiskList = append(dataDiskList, dataDisk)
+			}
+
+			if hasDataDisks && !isCombineDataDisks {
+				sort.SliceStable(dataDiskList, func(idx1, idx2 int) bool {
+					dataDiskIdIdx1 := *dataDiskList[idx1]["data_disk_id"].(*string)
+					dataDiskIdIdx2 := *dataDiskList[idx2]["data_disk_id"].(*string)
+					return diskOrderMap[dataDiskIdIdx1] < diskOrderMap[dataDiskIdIdx2]
+				})
+			}
+
+			// set data disk delete_with_instance_prepaid
+			for i := range dataDiskList {
+				dataDiskList[i]["delete_with_instance_prepaid"] = false
+				if hasDataDisks {
+					tmpDataDisk := tmpDataDisks[i].(map[string]interface{})
+					if deleteWithInstancePrepaidBool, ok := tmpDataDisk["delete_with_instance_prepaid"].(bool); ok {
+						dataDiskList[i]["delete_with_instance_prepaid"] = deleteWithInstancePrepaidBool
+					}
+				}
+			}
+
+			// set data disk name
+			finalDiskIds := make([]*string, 0, len(dataDiskList))
+			for _, item := range dataDiskList {
+				diskId := item["data_disk_id"].(*string)
+				finalDiskIds = append(finalDiskIds, diskId)
+			}
+
+			if len(finalDiskIds) != 0 {
+				err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
+					disks, err := cbsService.DescribeDiskList(ctx, finalDiskIds)
+					if err != nil {
+						return tccommon.RetryError(err)
+					}
+
+					for _, disk := range disks {
+						diskId := disk.DiskId
+						for _, v := range dataDiskList {
+							tmpDiskId := v["data_disk_id"].(*string)
+							if *diskId == *tmpDiskId {
+								v["data_disk_name"] = disk.DiskName
+								break
+							}
+						}
+					}
+
+					return nil
+				})
+
+				if err != nil {
+					return err
+				}
+			}
+
+			_ = d.Set("data_disks", dataDiskList)
+		}
 	} else if len(instance.DataDisks) > 0 && hasDataDisksName {
 		// scene with no disks name
 		dDiskHash := make([]map[string]interface{}, 0)
@@ -1251,69 +1257,107 @@ func resourceTencentCloudInstanceRead(d *schema.ResourceData, meta interface{}) 
 			}
 		}
 
-		err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
-			cbsDisks, err = cbsService.DescribeDiskList(ctx, diskIds)
+		if len(diskIds) > 0 {
+			err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
+				cbsDisks, err = cbsService.DescribeDiskList(ctx, diskIds)
+				if err != nil {
+					return tccommon.RetryError(err)
+				}
+
+				for i := range cbsDisks {
+					disk := cbsDisks[i]
+					if *disk.DiskState == "EXPANDING" {
+						return resource.RetryableError(fmt.Errorf("data_disk[%d] is expending", i))
+					}
+				}
+
+				return nil
+			})
+
 			if err != nil {
-				return tccommon.RetryError(err)
+				return err
 			}
 
-			for i := range cbsDisks {
-				disk := cbsDisks[i]
-				if *disk.DiskState == "EXPANDING" {
-					return resource.RetryableError(fmt.Errorf("data_disk[%d] is expending", i))
+			// make data disks data
+			sourceDataDisks := make([]*map[string]interface{}, 0)
+			for _, cvmDisk := range instance.DataDisks {
+				for _, cbsDisk := range cbsDisks {
+					if *cvmDisk.DiskId == *cbsDisk.DiskId {
+						dataDisk := make(map[string]interface{}, 10)
+						dataDisk["data_disk_id"] = cvmDisk.DiskId
+						dataDisk["data_disk_size"] = cvmDisk.DiskSize
+						dataDisk["data_disk_name"] = cbsDisk.DiskName
+						dataDisk["data_disk_type"] = cvmDisk.DiskType
+						dataDisk["data_disk_snapshot_id"] = cvmDisk.SnapshotId
+						dataDisk["delete_with_instance"] = cvmDisk.DeleteWithInstance
+						dataDisk["encrypt"] = cvmDisk.Encrypt
+						dataDisk["throughput_performance"] = cvmDisk.ThroughputPerformance
+						dataDisk["flag"] = 0
+						sourceDataDisks = append(sourceDataDisks, &dataDisk)
+						break
+					}
 				}
 			}
 
-			return nil
-		})
+			// has set disk name first
+			for v := range sourceDataDisks {
+				for i := range dDiskHash {
+					disk := *sourceDataDisks[v]
+					diskFlag := disk["flag"].(int)
+					diskName := disk["data_disk_name"].(*string)
+					diskType := disk["data_disk_type"].(*string)
+					diskSize := disk["data_disk_size"].(*int64)
+					deleteWithInstance := disk["delete_with_instance"].(*bool)
+					encrypt := disk["encrypt"].(*bool)
+					tmpHash := getDataDiskHash(diskHash{
+						diskType:           *diskType,
+						diskSize:           *diskSize,
+						deleteWithInstance: *deleteWithInstance,
+						encrypt:            *encrypt,
+					})
 
-		if err != nil {
-			return err
-		}
-
-		// make data disks data
-		sourceDataDisks := make([]*map[string]interface{}, 0)
-		for _, cvmDisk := range instance.DataDisks {
-			for _, cbsDisk := range cbsDisks {
-				if *cvmDisk.DiskId == *cbsDisk.DiskId {
-					dataDisk := make(map[string]interface{}, 10)
-					dataDisk["data_disk_id"] = cvmDisk.DiskId
-					dataDisk["data_disk_size"] = cvmDisk.DiskSize
-					dataDisk["data_disk_name"] = cbsDisk.DiskName
-					dataDisk["data_disk_type"] = cvmDisk.DiskType
-					dataDisk["data_disk_snapshot_id"] = cvmDisk.SnapshotId
-					dataDisk["delete_with_instance"] = cvmDisk.DeleteWithInstance
-					dataDisk["encrypt"] = cvmDisk.Encrypt
-					dataDisk["throughput_performance"] = cvmDisk.ThroughputPerformance
-					dataDisk["flag"] = 0
-					sourceDataDisks = append(sourceDataDisks, &dataDisk)
-					break
+					// get disk name
+					hashItem := dDiskHash[i]
+					if _, ok := hashItem[*diskName]; ok {
+						// check hash and flag
+						if hashItem["flag"] == 0 && diskFlag == 0 && tmpHash == hashItem[*diskName] {
+							dataDisk := make(map[string]interface{}, 8)
+							dataDisk["data_disk_id"] = disk["data_disk_id"]
+							dataDisk["data_disk_size"] = disk["data_disk_size"]
+							dataDisk["data_disk_name"] = disk["data_disk_name"]
+							dataDisk["data_disk_type"] = disk["data_disk_type"]
+							dataDisk["data_disk_snapshot_id"] = disk["data_disk_snapshot_id"]
+							dataDisk["delete_with_instance"] = disk["delete_with_instance"]
+							dataDisk["encrypt"] = disk["encrypt"]
+							dataDisk["throughput_performance"] = disk["throughput_performance"]
+							tmpDataDiskMap[hashItem["index"].(int)] = dataDisk
+							hashItem["flag"] = 1
+							disk["flag"] = 1
+							break
+						}
+					}
 				}
 			}
-		}
 
-		// has set disk name first
-		for v := range sourceDataDisks {
-			for i := range dDiskHash {
-				disk := *sourceDataDisks[v]
-				diskFlag := disk["flag"].(int)
-				diskName := disk["data_disk_name"].(*string)
-				diskType := disk["data_disk_type"].(*string)
-				diskSize := disk["data_disk_size"].(*int64)
-				deleteWithInstance := disk["delete_with_instance"].(*bool)
-				encrypt := disk["encrypt"].(*bool)
-				tmpHash := getDataDiskHash(diskHash{
-					diskType:           *diskType,
-					diskSize:           *diskSize,
-					deleteWithInstance: *deleteWithInstance,
-					encrypt:            *encrypt,
-				})
+			// no set disk name last
+			for v := range sourceDataDisks {
+				for i := range dDiskHash {
+					disk := *sourceDataDisks[v]
+					diskFlag := disk["flag"].(int)
+					diskType := disk["data_disk_type"].(*string)
+					diskSize := disk["data_disk_size"].(*int64)
+					deleteWithInstance := disk["delete_with_instance"].(*bool)
+					encrypt := disk["encrypt"].(*bool)
+					tmpHash := getDataDiskHash(diskHash{
+						diskType:           *diskType,
+						diskSize:           *diskSize,
+						deleteWithInstance: *deleteWithInstance,
+						encrypt:            *encrypt,
+					})
 
-				// get disk name
-				hashItem := dDiskHash[i]
-				if _, ok := hashItem[*diskName]; ok {
 					// check hash and flag
-					if hashItem["flag"] == 0 && diskFlag == 0 && tmpHash == hashItem[*diskName] {
+					hashItem := dDiskHash[i]
+					if hashItem["flag"] == 0 && diskFlag == 0 && tmpHash == hashItem[strconv.Itoa(i)] {
 						dataDisk := make(map[string]interface{}, 8)
 						dataDisk["data_disk_id"] = disk["data_disk_id"]
 						dataDisk["data_disk_size"] = disk["data_disk_size"]
@@ -1330,70 +1374,34 @@ func resourceTencentCloudInstanceRead(d *schema.ResourceData, meta interface{}) 
 					}
 				}
 			}
-		}
 
-		// no set disk name last
-		for v := range sourceDataDisks {
-			for i := range dDiskHash {
-				disk := *sourceDataDisks[v]
-				diskFlag := disk["flag"].(int)
-				diskType := disk["data_disk_type"].(*string)
-				diskSize := disk["data_disk_size"].(*int64)
-				deleteWithInstance := disk["delete_with_instance"].(*bool)
-				encrypt := disk["encrypt"].(*bool)
-				tmpHash := getDataDiskHash(diskHash{
-					diskType:           *diskType,
-					diskSize:           *diskSize,
-					deleteWithInstance: *deleteWithInstance,
-					encrypt:            *encrypt,
-				})
-
-				// check hash and flag
-				hashItem := dDiskHash[i]
-				if hashItem["flag"] == 0 && diskFlag == 0 && tmpHash == hashItem[strconv.Itoa(i)] {
-					dataDisk := make(map[string]interface{}, 8)
-					dataDisk["data_disk_id"] = disk["data_disk_id"]
-					dataDisk["data_disk_size"] = disk["data_disk_size"]
-					dataDisk["data_disk_name"] = disk["data_disk_name"]
-					dataDisk["data_disk_type"] = disk["data_disk_type"]
-					dataDisk["data_disk_snapshot_id"] = disk["data_disk_snapshot_id"]
-					dataDisk["delete_with_instance"] = disk["delete_with_instance"]
-					dataDisk["encrypt"] = disk["encrypt"]
-					dataDisk["throughput_performance"] = disk["throughput_performance"]
-					tmpDataDiskMap[hashItem["index"].(int)] = dataDisk
-					hashItem["flag"] = 1
-					disk["flag"] = 1
-					break
-				}
+			keys := make([]int, 0, len(tmpDataDiskMap))
+			for k := range tmpDataDiskMap {
+				keys = append(keys, k)
 			}
-		}
 
-		keys := make([]int, 0, len(tmpDataDiskMap))
-		for k := range tmpDataDiskMap {
-			keys = append(keys, k)
-		}
+			sort.Ints(keys)
+			for _, v := range keys {
+				tmpDataDisk := tmpDataDiskMap[v].(map[string]interface{})
+				dataDiskList = append(dataDiskList, tmpDataDisk)
+			}
 
-		sort.Ints(keys)
-		for _, v := range keys {
-			tmpDataDisk := tmpDataDiskMap[v].(map[string]interface{})
-			dataDiskList = append(dataDiskList, tmpDataDisk)
-		}
-
-		// set data disk delete_with_instance_prepaid
-		if v, ok := d.GetOk("data_disks"); ok {
-			tmpDataDisks := v.([]interface{})
-			for i := range tmpDataDisks {
-				dataDiskList[i]["delete_with_instance_prepaid"] = false
-				if hasDataDisks {
-					tmpDataDisk := tmpDataDisks[i].(map[string]interface{})
-					if deleteWithInstancePrepaidBool, ok := tmpDataDisk["delete_with_instance_prepaid"].(bool); ok {
-						dataDiskList[i]["delete_with_instance_prepaid"] = deleteWithInstancePrepaidBool
+			// set data disk delete_with_instance_prepaid
+			if v, ok := d.GetOk("data_disks"); ok {
+				tmpDataDisks := v.([]interface{})
+				for i := range tmpDataDisks {
+					dataDiskList[i]["delete_with_instance_prepaid"] = false
+					if hasDataDisks {
+						tmpDataDisk := tmpDataDisks[i].(map[string]interface{})
+						if deleteWithInstancePrepaidBool, ok := tmpDataDisk["delete_with_instance_prepaid"].(bool); ok {
+							dataDiskList[i]["delete_with_instance_prepaid"] = deleteWithInstancePrepaidBool
+						}
 					}
 				}
 			}
-		}
 
-		_ = d.Set("data_disks", dataDiskList)
+			_ = d.Set("data_disks", dataDiskList)
+		}
 	} else {
 		_ = d.Set("data_disks", dataDiskList)
 	}
