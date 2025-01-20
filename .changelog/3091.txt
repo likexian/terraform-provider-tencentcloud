@@ -1,0 +1,3 @@
+```release-note:enhancement
+resource/tencentcloud_dc_gateway: update code
+```

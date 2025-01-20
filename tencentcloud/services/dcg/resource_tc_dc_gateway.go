@@ -3,10 +3,12 @@ package dcg
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
-	"time"
 
+	vpc "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/vpc/v20170312"
 	tccommon "github.com/tencentcloudstack/terraform-provider-tencentcloud/tencentcloud/common"
+	"github.com/tencentcloudstack/terraform-provider-tencentcloud/tencentcloud/internal/helper"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -21,7 +23,6 @@ func ResourceTencentCloudDcGatewayInstance() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			State: schema.ImportStatePassthrough,
 		},
-
 		Schema: map[string]*schema.Schema{
 			"name": {
 				Type:         schema.TypeString,
@@ -74,48 +75,71 @@ func ResourceTencentCloudDcGatewayInstance() *schema.Resource {
 func resourceTencentCloudDcGatewayCreate(d *schema.ResourceData, meta interface{}) error {
 	defer tccommon.LogElapsed("resource.tencentcloud_dc_gateway.create")()
 
-	logId := tccommon.GetLogId(tccommon.ContextNil)
-	ctx := context.WithValue(context.TODO(), tccommon.LogIdKey, logId)
-
-	service := VpcService{client: meta.(tccommon.ProviderMeta).GetAPIV3Conn()}
-
 	var (
-		name              = d.Get("name").(string)
-		networkType       = d.Get("network_type").(string)
-		networkInstanceId = d.Get("network_instance_id").(string)
-		gatewayType       = d.Get("gateway_type").(string)
+		logId             = tccommon.GetLogId(tccommon.ContextNil)
+		request           = vpc.NewCreateDirectConnectGatewayRequest()
+		response          = vpc.NewCreateDirectConnectGatewayResponse()
+		networkType       string
+		networkInstanceId string
+		gatewayType       string
 	)
 
-	if networkType == DCG_NETWORK_TYPE_VPC &&
-		!strings.HasPrefix(networkInstanceId, "vpc") {
-
-		return fmt.Errorf("if `network_type` is '%s', the field `network_instance_id` must be a VPC resource",
-			DCG_NETWORK_TYPE_VPC)
+	if v, ok := d.GetOk("name"); ok {
+		request.DirectConnectGatewayName = helper.String(v.(string))
 	}
 
-	if networkType == DCG_NETWORK_TYPE_CCN &&
-		!strings.HasPrefix(networkInstanceId, "ccn") {
+	if v, ok := d.GetOk("network_type"); ok {
+		request.NetworkType = helper.String(v.(string))
+		networkType = v.(string)
+	}
 
-		return fmt.Errorf("if `network_type` is '%s', the field `network_instance_id` must be a CCN resource",
-			DCG_NETWORK_TYPE_CCN)
+	if v, ok := d.GetOk("network_instance_id"); ok {
+		request.NetworkInstanceId = helper.String(v.(string))
+		networkInstanceId = v.(string)
+	}
+
+	if v, ok := d.GetOk("gateway_type"); ok {
+		request.GatewayType = helper.String(v.(string))
+		gatewayType = v.(string)
+	}
+
+	if networkType == DCG_NETWORK_TYPE_VPC && !strings.HasPrefix(networkInstanceId, "vpc") {
+		return fmt.Errorf("if `network_type` is '%s', the field `network_instance_id` must be a VPC resource", DCG_NETWORK_TYPE_VPC)
+	}
+
+	if networkType == DCG_NETWORK_TYPE_CCN && !strings.HasPrefix(networkInstanceId, "ccn") {
+		return fmt.Errorf("if `network_type` is '%s', the field `network_instance_id` must be a CCN resource", DCG_NETWORK_TYPE_CCN)
 	}
 
 	if networkType == DCG_NETWORK_TYPE_CCN && gatewayType != DCG_GATEWAY_TYPE_NORMAL {
-
-		return fmt.Errorf("if `network_type` is '%s', the field `gateway_type` must be '%s'",
-			DCG_NETWORK_TYPE_CCN,
-			DCG_GATEWAY_TYPE_NORMAL)
+		return fmt.Errorf("if `network_type` is '%s', the field `gateway_type` must be '%s'", DCG_NETWORK_TYPE_CCN, DCG_GATEWAY_TYPE_NORMAL)
 	}
 
-	dcgId, err := service.CreateDirectConnectGateway(ctx, name, networkType, networkInstanceId, gatewayType)
+	err := resource.Retry(tccommon.WriteRetryTimeout, func() *resource.RetryError {
+		result, e := meta.(tccommon.ProviderMeta).GetAPIV3Conn().UseVpcClient().CreateDirectConnectGateway(request)
+		if e != nil {
+			log.Printf("[CRITAL]%s api[%s] fail, request body [%s], reason[%s]\n", logId, request.GetAction(), request.ToJsonString(), e.Error())
+			return tccommon.RetryError(e)
+		}
+
+		if result == nil || result.Response == nil || result.Response.DirectConnectGateway == nil {
+			return resource.NonRetryableError(fmt.Errorf("Create direct connect gateway failed, Response is nil."))
+		}
+
+		response = result
+		return nil
+	})
+
 	if err != nil {
+		log.Printf("[CRITAL]%s create direct connect gateway failed, reason:%s\n", logId, err.Error())
 		return err
 	}
 
-	d.SetId(dcgId)
+	if response.Response.DirectConnectGateway.DirectConnectGatewayId == nil {
+		return fmt.Errorf("DirectConnectGatewayId is nil.")
+	}
 
-	// add sleep protect, either network_instance_id will be set "".
-	time.Sleep(1 * time.Second)
+	d.SetId(*response.Response.DirectConnectGateway.DirectConnectGatewayId)
 
 	return resourceTencentCloudDcGatewayRead(d, meta)
 }
@@ -123,10 +147,12 @@ func resourceTencentCloudDcGatewayCreate(d *schema.ResourceData, meta interface{
 func resourceTencentCloudDcGatewayRead(d *schema.ResourceData, meta interface{}) error {
 	defer tccommon.LogElapsed("resource.tencentcloud_dc_gateway.read")()
 
-	logId := tccommon.GetLogId(tccommon.ContextNil)
-	ctx := context.WithValue(context.TODO(), tccommon.LogIdKey, logId)
+	var (
+		logId   = tccommon.GetLogId(tccommon.ContextNil)
+		ctx     = context.WithValue(context.TODO(), tccommon.LogIdKey, logId)
+		service = VpcService{client: meta.(tccommon.ProviderMeta).GetAPIV3Conn()}
+	)
 
-	service := VpcService{client: meta.(tccommon.ProviderMeta).GetAPIV3Conn()}
 	err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
 		info, has, e := service.DescribeDirectConnectGateway(ctx, d.Id())
 		if e != nil {
@@ -147,22 +173,43 @@ func resourceTencentCloudDcGatewayRead(d *schema.ResourceData, meta interface{})
 		_ = d.Set("create_time", info.createTime)
 		return nil
 	})
+
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
 func resourceTencentCloudDcGatewayUpdate(d *schema.ResourceData, meta interface{}) error {
 	defer tccommon.LogElapsed("resource.tencentcloud_dc_gateway.update")()
 
-	logId := tccommon.GetLogId(tccommon.ContextNil)
-	ctx := context.WithValue(context.TODO(), tccommon.LogIdKey, logId)
+	var (
+		logId = tccommon.GetLogId(tccommon.ContextNil)
+		dcgId = d.Id()
+	)
 
-	service := VpcService{client: meta.(tccommon.ProviderMeta).GetAPIV3Conn()}
 	if d.HasChange("name") {
-		var name = d.Get("name").(string)
-		return service.ModifyDirectConnectGatewayAttribute(ctx, d.Id(), name)
+		request := vpc.NewModifyDirectConnectGatewayAttributeRequest()
+		request.DirectConnectGatewayId = helper.String(dcgId)
+		if v, ok := d.GetOk("name"); ok {
+			request.DirectConnectGatewayName = helper.String(v.(string))
+		}
+
+		err := resource.Retry(tccommon.WriteRetryTimeout, func() *resource.RetryError {
+			_, e := meta.(tccommon.ProviderMeta).GetAPIV3Conn().UseVpcClient().ModifyDirectConnectGatewayAttribute(request)
+			if e != nil {
+				log.Printf("[CRITAL]%s api[%s] fail, request body [%s], reason[%s]\n", logId, request.GetAction(), request.ToJsonString(), e.Error())
+				return tccommon.RetryError(e)
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			log.Printf("[CRITAL]%s update direct connect gateway failed, reason:%s\n", logId, err.Error())
+			return err
+		}
 	}
 
 	return resourceTencentCloudDcGatewayRead(d, meta)
@@ -171,23 +218,27 @@ func resourceTencentCloudDcGatewayUpdate(d *schema.ResourceData, meta interface{
 func resourceTencentCloudDcGatewayDelete(d *schema.ResourceData, meta interface{}) error {
 	defer tccommon.LogElapsed("resource.tencentcloud_dc_gateway.delete")()
 
-	logId := tccommon.GetLogId(tccommon.ContextNil)
-	ctx := context.WithValue(context.TODO(), tccommon.LogIdKey, logId)
+	var (
+		logId   = tccommon.GetLogId(tccommon.ContextNil)
+		request = vpc.NewDeleteDirectConnectGatewayRequest()
+		dcgId   = d.Id()
+	)
 
-	service := VpcService{client: meta.(tccommon.ProviderMeta).GetAPIV3Conn()}
-	err := resource.Retry(tccommon.ReadRetryTimeout, func() *resource.RetryError {
-		_, has, e := service.DescribeDirectConnectGateway(ctx, d.Id())
+	request.DirectConnectGatewayId = helper.String(dcgId)
+	err := resource.Retry(tccommon.WriteRetryTimeout, func() *resource.RetryError {
+		_, e := meta.(tccommon.ProviderMeta).GetAPIV3Conn().UseVpcClient().DeleteDirectConnectGateway(request)
 		if e != nil {
+			log.Printf("[CRITAL]%s api[%s] fail, request body [%s], reason[%s]\n", logId, request.GetAction(), request.ToJsonString(), e.Error())
 			return tccommon.RetryError(e)
 		}
 
-		if has == 0 {
-			return nil
-		}
 		return nil
 	})
+
 	if err != nil {
+		log.Printf("[CRITAL]%s delete direct connect gateway failed, reason:%s\n", logId, err.Error())
 		return err
 	}
-	return service.DeleteDirectConnectGateway(ctx, d.Id())
+
+	return nil
 }
