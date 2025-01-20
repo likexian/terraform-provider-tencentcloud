@@ -1659,29 +1659,6 @@ func (me *ClbService) DescribeClbLogSet(ctx context.Context) (logSetId string, h
 	return
 }
 
-func (me *ClbService) CreateClbLogSet(ctx context.Context, name string, logsetType string, period int) (id string, errRet error) {
-	logId := tccommon.GetLogId(ctx)
-	request := clb.NewCreateClsLogSetRequest()
-	request.Period = helper.IntUint64(period)
-	request.LogsetName = &name
-	if logsetType != "" {
-		request.LogsetType = &logsetType
-	}
-	ratelimit.Check(request.GetAction())
-	response, err := me.client.UseClbClient().CreateClsLogSet(request)
-	if err != nil {
-		errRet = err
-		return
-	}
-	log.Printf("[DEBUG]%s api[%s] success, request body [%s], response body [%s]\n",
-		logId, request.GetAction(), request.ToJsonString(), response.ToJsonString())
-
-	if response.Response != nil {
-		id = *response.Response.LogsetId
-	}
-	return
-}
-
 func (me *ClbService) UpdateClsLogSet(ctx context.Context, request *cls.ModifyLogsetRequest) (errRet error) {
 	logId := tccommon.GetLogId(ctx)
 
