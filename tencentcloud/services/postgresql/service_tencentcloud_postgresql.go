@@ -831,6 +831,8 @@ func (me *PostgresqlService) DescribeRootUser(ctx context.Context, instanceId st
 	request.DBInstanceId = &instanceId
 	request.OrderBy = &orderBy
 	request.OrderByType = &orderByType
+	request.Offset = helper.Int64(0)
+	request.Limit = helper.Int64(100)
 	var response *postgresql.DescribeAccountsResponse
 	errRet = resource.Retry(2*tccommon.ReadRetryTimeout, func() *resource.RetryError {
 		response, errRet = me.client.UsePostgresqlClient().DescribeAccounts(request)
